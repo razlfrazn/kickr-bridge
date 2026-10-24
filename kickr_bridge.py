@@ -46,7 +46,15 @@ async def main():
     log = open(f"kickr_log_{int(time.time())}.csv", "w", newline="")
     writer = None
 
-    async with BleakClient(dev) as client:
+    client = BleakClient(dev)
+    for attempt in range(3):   # Windows sometimes reports services before they're all discovered
+        await client.connect()
+        if client.services.get_characteristic(INDOOR_BIKE): break
+        print("Services not ready yet, reconnecting..."); await client.disconnect(); await asyncio.sleep(2)
+    else:
+        print("Couldn't find the FTMS data characteristic. Try again in a moment."); return
+
+    try:
         def on_data(_, data):
             nonlocal writer
             row = {"t": round(time.time(), 3), **parse_indoor_bike(bytes(data))}
@@ -66,11 +74,17 @@ async def main():
 
         loop = asyncio.get_running_loop()
         while True:
-            line = (await loop.run_in_executor(None, sys.stdin.readline)).strip()
+            raw = await loop.run_in_executor(None, sys.stdin.readline)
+            if raw == "":                      # no keyboard (e.g. started by another program): just stream
+                await asyncio.Event().wait()
+            line = raw.strip()
             if line == "q": break
             if line.isdigit():
                 await client.write_gatt_char(CONTROL_POINT, b"\x05" + struct.pack("<h", int(line)), response=True)
                 print(f"Target power set to {line} W")
-    log.close()
+    finally:
+        await client.disconnect()
+        log.close()
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
